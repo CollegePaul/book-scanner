@@ -68,8 +68,17 @@
         let books = JSON.parse(localStorage.getItem('myLibrary')) || [];
         renderList();
 
-        // --- 2. SCANNER LOGIC (Quagga) ---
+        // --- VARIABLES FOR CONFIDENCE CHECK ---
+        let lastDetectedCode = null;
+        let detectionCount = 0;
+        const CONFIDENCE_THRESHOLD = 6; // Must see same code 6 times to accept
+
+        // --- 2. SCANNER LOGIC ---
         function startScan() {
+            // Reset variables
+            lastDetectedCode = null;
+            detectionCount = 0;
+
             document.getElementById('scanner-container').style.display = 'block';
             
             Quagga.init({
@@ -79,10 +88,10 @@
                     target: document.querySelector('#interactive'),
                     constraints: {
                         facingMode: "environment",
-                        // Force higher resolution for better barcode reading
                         width: { min: 640 },
                         height: { min: 480 },
-                        aspectRatio: { min: 1, max: 2 }
+                        aspectRatio: { min: 1, max: 2 },
+                        focusMode: "continuous" 
                     }
                 },
                 locator: {
@@ -90,44 +99,54 @@
                     halfSample: true
                 },
                 numOfWorkers: 2,
+                frequency: 10, // Scan 10 times per second
                 decoder: {
-                    // "ean_reader" is for standard ISBN-13
-                    // We add "upc_reader" for older mass-market paperbacks
-                    readers: ["ean_reader"] 
+                    readers: ["ean_reader"]
                 },
                 locate: true
             }, function(err) {
                 if (err) {
                     console.error(err);
-                    alert("Error starting camera. Ensure you are on HTTPS and allow camera access.");
+                    alert("Error starting camera.");
                     stopScan();
                     return;
                 }
                 Quagga.start();
             });
 
-            // What happens when a barcode is detected
             Quagga.onDetected(function(result) {
                 const rawCode = result.codeResult.code;
 
-                // --- FIX: "Bookland" Validation ---
-                // Only accept barcodes starting with 978 or 979
-                if (!rawCode.startsWith('978') && !rawCode.startsWith('979')) {
-                    // It detected something, but it's not a book.
-                    // We ignore it silently and let it keep scanning.
-                    return; 
-                }
+                // 1. Basic filter: Must look like an ISBN (start with 978 or 979)
+                if (!rawCode.startsWith('978') && !rawCode.startsWith('979')) return;
 
-                // If we pass the check above, proceed as normal
-                if(sessionStorage.getItem('lastScanned') !== rawCode) {
-                    sessionStorage.setItem('lastScanned', rawCode);
+                // 2. CONSENSUS LOGIC
+                // If this code matches the last one we saw...
+                if (rawCode === lastDetectedCode) {
+                    detectionCount++;
                     
-                    stopScan(); 
-                    
-                    const audio = new Audio('https://www.soundjay.com/button/beep-07.mp3');
-                    audio.play();
-                    
-                    fetchBookDetails(rawCode);
+                    // Optional: Visual feedback so you know it's locking on
+                    if (detectionCount % 2 === 0) {
+                         console.log(`Verifying... ${detectionCount}/${CONFIDENCE_THRESHOLD}`);
+                    }
+
+                    // 3. THRESHOLD REACHED
+                    // Only process if we have seen it enough times AND we haven't already saved it this session
+                    if (detectionCount >= CONFIDENCE_THRESHOLD) {
+                        if(sessionStorage.getItem('lastScanned') !== rawCode) {
+                            sessionStorage.setItem('lastScanned', rawCode);
+                            stopScan();
+                            
+                            const audio = new Audio('https://www.soundjay.com/button/beep-07.mp3');
+                            audio.play();
+                            
+                            fetchBookDetails(rawCode);
+                        }
+                    }
+                } else {
+                    // If the number changed (glitch), reset the counter
+                    lastDetectedCode = rawCode;
+                    detectionCount = 0;
                 }
             });
         }
@@ -135,32 +154,22 @@
         function stopScan() {
             Quagga.stop();
             document.getElementById('scanner-container').style.display = 'none';
-            sessionStorage.removeItem('lastScanned');
         }
 
-        // --- 3. API LOGIC (Fixed for "Book Not Found") ---
+        // --- 3. API LOGIC ---
         async function fetchBookDetails(isbn) {
-            // Clean the ISBN (remove dashes/spaces if any exist)
             const cleanISBN = isbn.trim().replace(/-/g, "");
-            
-            document.getElementById('status-msg').innerText = `Scanned: ${cleanISBN}. Searching...`;
+            document.getElementById('status-msg').innerText = `Verifying ISBN: ${cleanISBN}...`;
 
             try {
-                // We construct the dynamic URL
                 const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanISBN}&jscmd=data&format=json`;
-                
                 const response = await fetch(url);
                 const data = await response.json();
-                
-                // --- THE FIX: Get the first object value, regardless of the key name ---
-                // OpenLibrary returns { "ISBN:978...": { title: ... } }
-                // We use Object.values(data)[0] to grab the inner object directly.
                 const bookData = Object.values(data)[0];
 
                 if (bookData) {
                     const newBook = {
                         title: bookData.title,
-                        // Handle missing authors gracefully
                         author: bookData.authors ? bookData.authors.map(a => a.name).join(", ") : "Unknown Author",
                         cover: bookData.cover ? bookData.cover.medium : "https://via.placeholder.com/50x75?text=No+Cover",
                         isbn: cleanISBN
@@ -168,15 +177,14 @@
 
                     books.unshift(newBook); 
                     saveAndRender();
-                    document.getElementById('status-msg').innerText = `Success! Added: ${newBook.title}`;
+                    document.getElementById('status-msg').innerText = `Added: ${newBook.title}`;
                 } else {
-                    // Detailed Error Message
-                    alert(`Book not found for ISBN: ${cleanISBN}\n\nMake sure you scanned the ISBN barcode (usually starts with 978) and not a generic retail barcode.`);
-                    document.getElementById('status-msg').innerText = "Try scanning again.";
+                    alert(`Book not found for ISBN: ${cleanISBN}. \nTry scanning slightly slower.`);
+                    document.getElementById('status-msg').innerText = "Ready to scan.";
                 }
             } catch (error) {
                 console.error(error);
-                alert("Network error or API issue. Check console for details.");
+                alert("Network error.");
             }
         }
 
@@ -189,7 +197,6 @@
         function renderList() {
             const list = document.getElementById('book-list');
             list.innerHTML = "";
-            
             books.forEach((book, index) => {
                 const li = document.createElement('li');
                 li.className = 'book-card';
