@@ -106,12 +106,19 @@
                 Quagga.start();
             });
 
+            // What happens when a barcode is detected
             Quagga.onDetected(function(result) {
                 const rawCode = result.codeResult.code;
-                
-                // --- DEBUG: Uncomment this line if you suspect the scanner is misreading numbers ---
-                // console.log("Detected raw code:", rawCode);
 
+                // --- FIX: "Bookland" Validation ---
+                // Only accept barcodes starting with 978 or 979
+                if (!rawCode.startsWith('978') && !rawCode.startsWith('979')) {
+                    // It detected something, but it's not a book.
+                    // We ignore it silently and let it keep scanning.
+                    return; 
+                }
+
+                // If we pass the check above, proceed as normal
                 if(sessionStorage.getItem('lastScanned') !== rawCode) {
                     sessionStorage.setItem('lastScanned', rawCode);
                     
