@@ -11,6 +11,8 @@
         /* BASIC STYLING */
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f9; }
         h1 { text-align: center; color: #333; }
+
+        
         
         /* SCANNER CAMERA BOX (Hidden by default) */
         #scanner-container {
@@ -50,6 +52,7 @@
 <body>
 
     <h1>📚 My Library</h1>
+    <button class="btn" style="background-color: #28a745;" onclick="exportToCSV()">📤 Export to Excel (CSV)</button>
     
     <button class="btn" onclick="startScan()">📷 Scan New Book</button>
     
@@ -71,7 +74,7 @@
         // --- VARIABLES FOR CONFIDENCE CHECK ---
         let lastDetectedCode = null;
         let detectionCount = 0;
-        const CONFIDENCE_THRESHOLD = 6; // Must see same code 6 times to accept
+        const CONFIDENCE_THRESHOLD = 4; // Must see same code 6 times to accept
 
         // --- 2. SCANNER LOGIC ---
         function startScan() {
@@ -158,35 +161,58 @@
 
         // --- 3. API LOGIC ---
         async function fetchBookDetails(isbn) {
-            const cleanISBN = isbn.trim().replace(/-/g, "");
-            document.getElementById('status-msg').innerText = `Verifying ISBN: ${cleanISBN}...`;
+    const cleanISBN = isbn.trim().replace(/-/g, "");
+    document.getElementById('status-msg').innerText = `Verifying ISBN: ${cleanISBN}...`;
 
-            try {
-                const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanISBN}&jscmd=data&format=json`;
-                const response = await fetch(url);
-                const data = await response.json();
-                const bookData = Object.values(data)[0];
+    try {
+        // --- STEP 1: Fetch from Open Library ---
+        const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanISBN}&jscmd=data&format=json`;
+        const response = await fetch(url);
+        const data = await response.json();
+        const bookData = Object.values(data)[0];
 
-                if (bookData) {
-                    const newBook = {
-                        title: bookData.title,
-                        author: bookData.authors ? bookData.authors.map(a => a.name).join(", ") : "Unknown Author",
-                        cover: bookData.cover ? bookData.cover.medium : "https://via.placeholder.com/50x75?text=No+Cover",
-                        isbn: cleanISBN
-                    };
-
-                    books.unshift(newBook); 
-                    saveAndRender();
-                    document.getElementById('status-msg').innerText = `Added: ${newBook.title}`;
-                } else {
-                    alert(`Book not found for ISBN: ${cleanISBN}. \nTry scanning slightly slower.`);
-                    document.getElementById('status-msg').innerText = "Ready to scan.";
+        if (bookData) {
+            let coverUrl = bookData.cover ? bookData.cover.medium : null;
+            
+            // --- STEP 2: Fallback to Google Books for Cover if missing ---
+            if (!coverUrl) {
+                try {
+                    const googleUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanISBN}`;
+                    const gResponse = await fetch(googleUrl);
+                    const gData = await gResponse.json();
+                    
+                    if (gData.totalItems > 0 && gData.items[0].volumeInfo.imageLinks) {
+                        // Google image links are http, we force https to avoid warnings
+                        coverUrl = gData.items[0].volumeInfo.imageLinks.thumbnail.replace('http://', 'https://');
+                    }
+                } catch (gErr) {
+                    console.log("Google Books fallback failed", gErr);
                 }
-            } catch (error) {
-                console.error(error);
-                alert("Network error.");
             }
+
+            // Final fallback if both fail
+            if (!coverUrl) coverUrl = "https://via.placeholder.com/50x75?text=No+Cover";
+
+            const newBook = {
+                title: bookData.title,
+                author: bookData.authors ? bookData.authors.map(a => a.name).join(", ") : "Unknown Author",
+                cover: coverUrl,
+                isbn: cleanISBN
+            };
+
+            books.unshift(newBook); 
+            saveAndRender();
+            document.getElementById('status-msg').innerText = `Added: ${newBook.title}`;
+        
+        } else {
+            alert(`Book not found for ISBN: ${cleanISBN}.`);
+            document.getElementById('status-msg').innerText = "Ready to scan.";
         }
+    } catch (error) {
+        console.error(error);
+        alert("Network error.");
+    }
+}
 
         // --- 4. UI HELPER FUNCTIONS ---
         function saveAndRender() {
@@ -219,6 +245,34 @@
                 saveAndRender();
             }
         }
+
+
+        function exportToCSV() {
+    if (books.length === 0) {
+        alert("No books to export!");
+        return;
+    }
+
+    // 1. Create the CSV Header
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "ISBN,Title,Author,Cover URL\n"; // Column names
+
+    // 2. Loop through books and add rows
+    books.forEach(function(book) {
+        // We wrap fields in quotes "" to handle commas inside titles
+        let row = `"${book.isbn}","${book.title}","${book.author}","${book.cover}"`;
+        csvContent += row + "\n";
+    });
+
+    // 3. Trigger Download
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "my_library.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
     </script>
 </body>
 </html>
