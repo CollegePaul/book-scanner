@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Book Scanner</title>
+    
+    <script src="https://unpkg.com/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
+
+    <style>
+        /* BASIC STYLING */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f9; }
+        h1 { text-align: center; color: #333; }
+        
+        /* SCANNER CAMERA BOX (Hidden by default) */
+        #scanner-container {
+            display: none; 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: #000; z-index: 10;
+        }
+        #scanner-container video {
+            width: 100%; height: 100%; object-fit: cover;
+        }
+        #close-btn {
+            position: absolute; top: 20px; right: 20px; z-index: 20;
+            background: white; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer;
+        }
+
+        /* BUTTONS */
+        .btn {
+            display: block; width: 100%; padding: 15px; background-color: #007bff; color: white;
+            text-align: center; border: none; border-radius: 8px; font-size: 1.2rem; cursor: pointer; margin-bottom: 20px;
+        }
+        .btn:active { background-color: #0056b3; }
+
+        /* BOOK LIST */
+        #book-list { list-style: none; padding: 0; }
+        .book-card {
+            background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 15px;
+        }
+        .book-card img { width: 50px; height: 75px; object-fit: cover; background: #ddd; }
+        .book-info h3 { margin: 0 0 5px 0; font-size: 1rem; }
+        .book-info p { margin: 0; color: #666; font-size: 0.9rem; }
+        .delete-btn {
+            margin-left: auto; background: #ff4d4d; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>📚 My Library</h1>
+    
+    <button class="btn" onclick="startScan()">📷 Scan New Book</button>
+    
+    <div id="status-msg" style="text-align: center; margin-bottom: 10px; color: #666;"></div>
+
+    <ul id="book-list">
+        </ul>
+
+    <div id="scanner-container">
+        <button id="close-btn" onclick="stopScan()">Close Camera</button>
+        <div id="interactive" class="viewport"></div>
+    </div>
+
+    <script>
+        // --- 1. SETUP & STORAGE ---
+        // Load books from local storage on startup
+        let books = JSON.parse(localStorage.getItem('myLibrary')) || [];
+        renderList();
+
+        // --- 2. SCANNER LOGIC (Quagga) ---
+        function startScan() {
+            document.getElementById('scanner-container').style.display = 'block';
+            
+            Quagga.init({
+                inputStream: {
+                    name: "Live",
+                    type: "LiveStream",
+                    target: document.querySelector('#interactive'),
+                    constraints: {
+                        facingMode: "environment" // Use back camera
+                    }
+                },
+                decoder: {
+                    readers: ["ean_reader"] // ISBNs use EAN-13
+                }
+            }, function(err) {
+                if (err) {
+                    console.error(err);
+                    alert("Error starting camera. Ensure you are on HTTPS.");
+                    stopScan();
+                    return;
+                }
+                Quagga.start();
+            });
+
+            // What happens when a barcode is detected
+            Quagga.onDetected(function(result) {
+                const isbn = result.codeResult.code;
+                
+                // Simple check to ensure we didn't just scan this
+                // (Quagga scans 30 times a second)
+                if(sessionStorage.getItem('lastScanned') !== isbn) {
+                    sessionStorage.setItem('lastScanned', isbn);
+                    
+                    // Stop scanning and process
+                    stopScan(); 
+                    
+                    // Play a beep (optional feedback)
+                    const audio = new Audio('https://www.soundjay.com/button/beep-07.mp3');
+                    audio.play();
+                    
+                    fetchBookDetails(isbn);
+                }
+            });
+        }
+
+        function stopScan() {
+            Quagga.stop();
+            document.getElementById('scanner-container').style.display = 'none';
+            sessionStorage.removeItem('lastScanned');
+        }
+
+        // --- 3. API LOGIC (OpenLibrary) ---
+        async function fetchBookDetails(isbn) {
+            document.getElementById('status-msg').innerText = `Looking up ISBN: ${isbn}...`;
+            
+            try {
+                const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&jscmd=data&format=json`);
+                const data = await response.json();
+                const bookData = data[`ISBN:${isbn}`];
+
+                if (bookData) {
+                    const newBook = {
+                        title: bookData.title,
+                        author: bookData.authors ? bookData.authors[0].name : "Unknown Author",
+                        cover: bookData.cover ? bookData.cover.medium : "https://via.placeholder.com/50x75?text=No+Cover",
+                        isbn: isbn
+                    };
+
+                    books.unshift(newBook); // Add to top of list
+                    saveAndRender();
+                    document.getElementById('status-msg').innerText = `Added: ${newBook.title}`;
+                } else {
+                    alert("Book not found in OpenLibrary database.");
+                    document.getElementById('status-msg').innerText = "";
+                }
+            } catch (error) {
+                console.error(error);
+                alert("Failed to fetch book data.");
+            }
+        }
+
+        // --- 4. UI HELPER FUNCTIONS ---
+        function saveAndRender() {
+            localStorage.setItem('myLibrary', JSON.stringify(books));
+            renderList();
+        }
+
+        function renderList() {
+            const list = document.getElementById('book-list');
+            list.innerHTML = "";
+            
+            books.forEach((book, index) => {
+                const li = document.createElement('li');
+                li.className = 'book-card';
+                li.innerHTML = `
+                    <img src="${book.cover}" alt="Cover">
+                    <div class="book-info">
+                        <h3>${book.title}</h3>
+                        <p>${book.author}</p>
+                    </div>
+                    <button class="delete-btn" onclick="removeBook(${index})">X</button>
+                `;
+                list.appendChild(li);
+            });
+        }
+
+        function removeBook(index) {
+            if(confirm("Remove this book?")) {
+                books.splice(index, 1);
+                saveAndRender();
+            }
+        }
+    </script>
+</body>
+</html>
